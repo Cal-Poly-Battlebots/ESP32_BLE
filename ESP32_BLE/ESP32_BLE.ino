@@ -1,8 +1,24 @@
+/*
+ * ESP32 Bluetooth Low Energy Implementation
+ * BattleBots Capstone -- Fall 2023
+ * Author(s): Aaron Rosen (CPE) & ChatGPT (AI)
+ * 
+ * Sets up a BLE server and reads 3 characteristics
+ * Uses FreeRTOS underneath Arduino execution
+ * For communication with an iOS app
+ */
 #include <BLEDevice.h>
 #include <BLEServer.h>
 #include <BLEUtils.h>
 #include <BLE2902.h>
+#include <RoboClaw.h>
 
+//---------RoboClaw----------------
+RoboClaw roboclaw(&Serial2, 10000);
+#define address_fwd 0x80 // 128
+#define address_rwd 0x82 // 130
+
+//---------BLE---------------------
 BLECharacteristic *joystickCharacteristic;
 BLECharacteristic *swipeCharacteristic;
 BLECharacteristic *abilityCharacteristic;
@@ -14,6 +30,10 @@ float swipeAngle = 0;
 float swipeMagnitude = 0;
 String abilityBar = "";
 
+float maxMagnitude = 50.0;
+int maxMotorPower = 127;
+float turningPower = 0.4; // 40% turning power, 60% reserved for translation
+
 // UART service UUID data
 #define SERVICE_UUID     "6E400001-B5A3-F393-E0A9-E50E24DCCA9E"
 #define JOYSTICK_UUID    "6E400002-B5A3-F393-E0A9-E50E24DCCA9E"
@@ -21,53 +41,57 @@ String abilityBar = "";
 #define ABILITY_UUID     "6E400004-B5A3-F393-E0A9-E50E24DCCA9E"
 
 class MyServerCallbacks : public BLEServerCallbacks {
-  void onConnect(BLEServer *pServer) {
-    deviceConnected = true;
-  };
-  void onDisconnect(BLEServer *pServer) {
-    deviceConnected = false;
-  }
+    void onConnect(BLEServer *pServer) {
+      Serial.println("Device connected.");
+      deviceConnected = true;
+    };
+    void onDisconnect(BLEServer *pServer) {
+      Serial.println("Device disconnected.");
+      deviceConnected = false;
+      pServer->getAdvertising()->start(); // Restart advertising
+    }
 };
 
 class MyReadCallbacks : public BLECharacteristicCallbacks {
-  void onRead(BLECharacteristic *pCharacteristic) {
-    if (pCharacteristic == joystickCharacteristic) {
-      // Read data from joystickCharacteristic
-      std::string value = pCharacteristic->getValue();
+    void onWrite(BLECharacteristic *pCharacteristic) {
+      if (pCharacteristic == joystickCharacteristic) {
+        // Read data from joystickCharacteristic
+        std::string value = pCharacteristic->getValue();
 
-      // Parse received data (assuming it's in format "angle,magnitude")
-      int commaIndex = value.find(',');
-      if (commaIndex != -1 && value.length() > commaIndex + 1) {
-        String angleStr = value.substr(0, commaIndex).c_str();
-        String magnitudeStr = value.substr(commaIndex + 1).c_str();
-        
-        // Update ESP32 variables with parsed values
-        joystickAngle = angleStr.toFloat();
-        joystickMagnitude = magnitudeStr.toFloat();
-      }
-    } else if (pCharacteristic == swipeCharacteristic) {
-      // Read data from joystickCharacteristic
-      std::string value = pCharacteristic->getValue();
+        // Parse received data (assuming it's in format "angle,magnitude")
+        int commaIndex = value.find(',');
+        if (commaIndex != -1 && value.length() > commaIndex + 1) {
+          String angleStr = value.substr(0, commaIndex).c_str();
+          String magnitudeStr = value.substr(commaIndex + 1).c_str();
 
-      // Parse received data (assuming it's in format "angle,magnitude")
-      int commaIndex = value.find(',');
-      if (commaIndex != -1 && value.length() > commaIndex + 1) {
-        String angleStr = value.substr(0, commaIndex).c_str();
-        String magnitudeStr = value.substr(commaIndex + 1).c_str();
-        
-        // Update ESP32 variables with parsed values
-        swipeAngle = angleStr.toFloat();
-        swipeMagnitude = magnitudeStr.toFloat();
+          // Update ESP32 variables with parsed values
+          joystickAngle = angleStr.toFloat();
+          joystickMagnitude = magnitudeStr.toFloat();
+        }
+      } else if (pCharacteristic == swipeCharacteristic) {
+        // Read data from joystickCharacteristic
+        std::string value = pCharacteristic->getValue();
+
+        // Parse received data (assuming it's in format "angle,magnitude")
+        int commaIndex = value.find(',');
+        if (commaIndex != -1 && value.length() > commaIndex + 1) {
+          String angleStr = value.substr(0, commaIndex).c_str();
+          String magnitudeStr = value.substr(commaIndex + 1).c_str();
+
+          // Update ESP32 variables with parsed values
+          swipeAngle = angleStr.toFloat();
+          swipeMagnitude = magnitudeStr.toFloat();
+        }
+      } else if (pCharacteristic == abilityCharacteristic) {
+        std::string value = pCharacteristic->getValue();
+        abilityBar = String(value.c_str());
       }
-    } else if (pCharacteristic == abilityCharacteristic) {
-      std::string value = pCharacteristic->getValue();
-      abilityBar = String(value.c_str());
     }
-  }
 };
 
 void setup() {
   Serial.begin(9600);
+  delay(1000); // Add a delay to prevent issues initializing BLE after flashing
   BLEDevice::init("ESP32_BLE"); // Set BLE device name
   BLEServer *pServer = BLEDevice::createServer(); // Create BLE server
   pServer->setCallbacks(new MyServerCallbacks());
@@ -77,34 +101,87 @@ void setup() {
 
   // Create the BLE Characteristics
   joystickCharacteristic = pService->createCharacteristic(
-      JOYSTICK_UUID,
-      BLECharacteristic::PROPERTY_WRITE | BLECharacteristic::PROPERTY_READ | BLECharacteristic::PROPERTY_NOTIFY);
+                             JOYSTICK_UUID,
+                             BLECharacteristic::PROPERTY_WRITE_NR | BLECharacteristic::PROPERTY_READ | BLECharacteristic::PROPERTY_NOTIFY);
   joystickCharacteristic->addDescriptor(new BLE2902());
   joystickCharacteristic->setCallbacks(new MyReadCallbacks());
 
   swipeCharacteristic = pService->createCharacteristic(
-      SWIPE_UUID,
-      BLECharacteristic::PROPERTY_WRITE | BLECharacteristic::PROPERTY_READ | BLECharacteristic::PROPERTY_NOTIFY);
+                          SWIPE_UUID,
+                          BLECharacteristic::PROPERTY_WRITE_NR | BLECharacteristic::PROPERTY_READ | BLECharacteristic::PROPERTY_NOTIFY);
   swipeCharacteristic->addDescriptor(new BLE2902());
   swipeCharacteristic->setCallbacks(new MyReadCallbacks());
 
   abilityCharacteristic = pService->createCharacteristic(
-      ABILITY_UUID,
-      BLECharacteristic::PROPERTY_WRITE | BLECharacteristic::PROPERTY_READ | BLECharacteristic::PROPERTY_NOTIFY);
+                            ABILITY_UUID,
+                            BLECharacteristic::PROPERTY_WRITE_NR | BLECharacteristic::PROPERTY_READ | BLECharacteristic::PROPERTY_NOTIFY);
   abilityCharacteristic->addDescriptor(new BLE2902());
   abilityCharacteristic->setCallbacks(new MyReadCallbacks());
 
   pService->start(); // Start the service
   pServer->getAdvertising()->start(); // Start advertising
   Serial.println("Waiting for a client connection...");
+
+  // Initialize RoboClaws
+  roboclaw.begin(38400);
 }
 
 void loop() {
-  // Handle other tasks, if any, within loop
-  // No continuous BLE operations are necessary in loop
   // Values will be read when the characteristics are accessed by the iOS app
-  Serial.println("Joystick (Angle, Magnitude): " + String(joystickAngle) + ", " + String(joystickMagnitude));
-  Serial.println("Swipe (Angle, Magnitude): " + String(swipeAngle) + ", " + String(swipeMagnitude));
-  Serial.println("Ability Bar (Binary String): " + abilityBar);
-  delay(50); // Add a delay to avoid rapid Serial prints
+//  Serial.println("Joystick (Angle, Magnitude): " + String(joystickAngle) + ", " + String(joystickMagnitude));
+//  Serial.println("Swipe (Angle, Magnitude): " + String(swipeAngle) + ", " + String(swipeMagnitude));
+//  Serial.println("Ability Bar (Binary String): " + abilityBar);
+//  delay(200); // Add a delay to avoid rapid Serial prints
+  // What update speed is too quick?
+
+  // Mecanum drive based on the BLE readings
+  float power = joystickMagnitude / maxMagnitude;// Normalize power 0-1
+  float sine = sin(joystickAngle - PI/4);
+  float cosine = cos(joystickAngle - PI/4);
+  float maximum = max(abs(sine), abs(cosine));
+
+  // sine yields -1.0 to 1.0, swipe magnitude is 0-50, then -50.0 to 50.0 is normalized to -1.0 to 1.0
+  float turn = sin(swipeAngle) * swipeMagnitude / maxMagnitude;
+  int turnNormalized = turn * maxMotorPower;  // -1 to 1 ---> -maxMotorPower to maxMotorPower
+  turnNormalized *= turningPower;
+
+  // Motor speeds 0 to max motor power
+  int leftFront = power * cosine / maximum * maxMotorPower + turnNormalized;// turn is 0-maxMotorPower added onto translation power 0-maxMotorPower
+  int rightFront = power * sine / maximum * maxMotorPower - turnNormalized;
+  int leftRear = power * sine / maximum * maxMotorPower + turnNormalized;
+  int rightRear = power * cosine / maximum * maxMotorPower - turnNormalized;
+
+  // If one is overpowered, make sure it maxes out and the rest are scaled down with it
+  if (power * maxMotorPower + abs(turnNormalized) > maxMotorPower) {
+    // -maxMotorPower to maxMotorPower
+    leftFront = (leftFront / (power * maxMotorPower + abs(turnNormalized))) * maxMotorPower;
+    rightFront = (rightFront / (power * maxMotorPower + abs(turnNormalized))) * maxMotorPower;
+    leftRear = (leftRear / (power * maxMotorPower + abs(turnNormalized))) * maxMotorPower;
+    rightRear = (rightRear / (power * maxMotorPower + abs(turnNormalized))) * maxMotorPower;
+  }
+
+  if (leftFront > 0) {
+    roboclaw.ForwardM1(address_fwd, leftFront);
+  } else {
+    roboclaw.BackwardM1(address_fwd, -leftFront);
+  }
+
+  if (rightFront > 0) {
+    roboclaw.ForwardM2(address_fwd, rightFront);
+  } else {
+    roboclaw.BackwardM2(address_fwd, -rightFront);
+  }
+
+  if (leftRear > 0) {
+    roboclaw.ForwardM1(address_rwd, leftRear);
+  } else {
+    roboclaw.BackwardM1(address_rwd, -leftRear);
+  }
+
+  if (rightRear > 0) {
+    roboclaw.ForwardM2(address_rwd, rightRear);
+  } else {
+    roboclaw.BackwardM2(address_rwd, -rightRear);
+  }
+  
 }
