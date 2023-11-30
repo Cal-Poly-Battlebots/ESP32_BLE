@@ -1,12 +1,12 @@
 /*
- * ESP32 Bluetooth Low Energy Implementation
- * BattleBots Capstone -- Fall 2023
- * Author(s): Aaron Rosen (CPE) & ChatGPT (AI)
- * 
- * Sets up a BLE server and reads 3 characteristics
- * Uses FreeRTOS underneath Arduino execution
- * For communication with an iOS app
- */
+   ESP32 Bluetooth Low Energy Implementation
+   BattleBots Capstone -- Fall 2023
+   Author(s): Aaron Rosen (CPE) & ChatGPT (AI)
+
+   Sets up a BLE server and reads 3 characteristics
+   Uses FreeRTOS underneath Arduino execution
+   For communication with an iOS app
+*/
 #include <BLEDevice.h>
 #include <BLEServer.h>
 #include <BLEUtils.h>
@@ -15,8 +15,10 @@
 
 //---------RoboClaw----------------
 RoboClaw roboclaw(&Serial2, 10000);
-#define address_fwd 0x80 // 128
-#define address_rwd 0x82 // 130
+#define address_right 0x80 // 128
+#define address_left 0x82 // 130
+
+#define PI 3.14159
 
 //---------BLE---------------------
 BLECharacteristic *joystickCharacteristic;
@@ -24,9 +26,9 @@ BLECharacteristic *swipeCharacteristic;
 BLECharacteristic *abilityCharacteristic;
 bool deviceConnected = false;
 
-float joystickAngle = 0;
+float joystickAngle = 0; // Degrees
 float joystickMagnitude = 0;
-float swipeAngle = 0;
+float swipeAngle = 0; // Degrees
 float swipeMagnitude = 0;
 String abilityBar = "";
 
@@ -122,34 +124,49 @@ void setup() {
   pServer->getAdvertising()->start(); // Start advertising
   Serial.println("Waiting for a client connection...");
 
-  // Initialize RoboClaws
-  roboclaw.begin(38400);
+  // Initialize RoboClaws with baud rate
+  roboclaw.begin(38400);// Should we go to 460800 bps
 }
 
 void loop() {
   // Values will be read when the characteristics are accessed by the iOS app
-//  Serial.println("Joystick (Angle, Magnitude): " + String(joystickAngle) + ", " + String(joystickMagnitude));
-//  Serial.println("Swipe (Angle, Magnitude): " + String(swipeAngle) + ", " + String(swipeMagnitude));
-//  Serial.println("Ability Bar (Binary String): " + abilityBar);
-//  delay(200); // Add a delay to avoid rapid Serial prints
-  // What update speed is too quick?
+  //  Serial.println("Joystick (Angle, Magnitude): " + String(joystickAngle) + ", " + String(joystickMagnitude));
+  //  Serial.println("Swipe (Angle, Magnitude): " + String(swipeAngle) + ", " + String(swipeMagnitude));
+  //  Serial.println("Ability Bar (Binary String): " + abilityBar);
 
   // Mecanum drive based on the BLE readings
   float power = joystickMagnitude / maxMagnitude;// Normalize power 0-1
-  float sine = sin(joystickAngle - PI/4);
-  float cosine = cos(joystickAngle - PI/4);
-  float maximum = max(abs(sine), abs(cosine));
+  float anglesToRadians = 0.01745329252;
+  float sine = sin((joystickAngle * anglesToRadians) - (PI / 4));
+  float cosine = cos((joystickAngle * anglesToRadians) - (PI / 4));
+  float maximum = max(abs(sine), abs(cosine));// 0 to 1
+//  Serial.print("Cosine: ");
+//  Serial.println(cosine, DEC);
+//  Serial.print("Sine: ");
+//  Serial.println(sine, DEC);
+//  Serial.print("max: ");
+//  Serial.println(maximum, DEC);
 
   // sine yields -1.0 to 1.0, swipe magnitude is 0-50, then -50.0 to 50.0 is normalized to -1.0 to 1.0
-  float turn = sin(swipeAngle) * swipeMagnitude / maxMagnitude;
-  int turnNormalized = turn * maxMotorPower;  // -1 to 1 ---> -maxMotorPower to maxMotorPower
-  turnNormalized *= turningPower;
+  float turn = sin(swipeAngle * anglesToRadians) * swipeMagnitude / maxMagnitude;
+  int turnNormalized = turn * maxMotorPower * turningPower;  // -1 to 1 ---> percent of -maxMotorPower to maxMotorPower
 
   // Motor speeds 0 to max motor power
-  int leftFront = power * cosine / maximum * maxMotorPower + turnNormalized;// turn is 0-maxMotorPower added onto translation power 0-maxMotorPower
-  int rightFront = power * sine / maximum * maxMotorPower - turnNormalized;
-  int leftRear = power * sine / maximum * maxMotorPower + turnNormalized;
-  int rightRear = power * cosine / maximum * maxMotorPower - turnNormalized;
+  int leftFront = power * maxMotorPower * cosine / maximum + turnNormalized;// turn is 0-maxMotorPower added onto translation power 0-maxMotorPower
+  int rightFront = power * maxMotorPower * sine / maximum - turnNormalized;
+  int leftRear = power * maxMotorPower * sine / maximum + turnNormalized;
+  int rightRear = power * maxMotorPower * cosine / maximum - turnNormalized;
+
+//  Serial.print("A Left Front: ");
+//  Serial.println(leftFront, DEC);
+//  Serial.print("A Left Rear: ");
+//  Serial.println(leftRear, DEC);
+//  Serial.print("A Right Front: ");
+//  Serial.println(rightFront, DEC);
+//  Serial.print("A Right Rear: ");
+//  Serial.println(rightRear, DEC);
+//  Serial.print("A Angle: ");
+//  Serial.println(joystickAngle, DEC);
 
   // If one is overpowered, make sure it maxes out and the rest are scaled down with it
   if (power * maxMotorPower + abs(turnNormalized) > maxMotorPower) {
@@ -160,28 +177,43 @@ void loop() {
     rightRear = (rightRear / (power * maxMotorPower + abs(turnNormalized))) * maxMotorPower;
   }
 
-  if (leftFront > 0) {
-    roboclaw.ForwardM1(address_fwd, leftFront);
-  } else {
-    roboclaw.BackwardM1(address_fwd, -leftFront);
-  }
+  leftFront = -leftFront;
+  leftRear = -leftRear;
 
-  if (rightFront > 0) {
-    roboclaw.ForwardM2(address_fwd, rightFront);
-  } else {
-    roboclaw.BackwardM2(address_fwd, -rightFront);
-  }
+  int motorDelay = 0;//ms
+//  Serial.print("Left Front: ");
+//  Serial.println(leftFront, DEC);
+//  Serial.print("Left Rear: ");
+//  Serial.println(leftRear, DEC);
+//  Serial.print("Right Front: ");
+//  Serial.println(rightFront, DEC);
+//  Serial.print("Right Rear: ");
+//  Serial.println(rightRear, DEC);
+//  Serial.print("Angle: ");
+//  Serial.println(joystickAngle, DEC);
 
   if (leftRear > 0) {
-    roboclaw.ForwardM1(address_rwd, leftRear);
+    roboclaw.ForwardM2(address_left, leftRear);
   } else {
-    roboclaw.BackwardM1(address_rwd, -leftRear);
+    roboclaw.BackwardM2(address_left, abs(leftRear));
+  }
+
+  if (leftFront > 0) {
+    roboclaw.ForwardM1(address_right, leftFront);
+  } else {
+    roboclaw.BackwardM1(address_right, abs(leftFront));
   }
 
   if (rightRear > 0) {
-    roboclaw.ForwardM2(address_rwd, rightRear);
+    roboclaw.ForwardM1(address_left, rightRear);
   } else {
-    roboclaw.BackwardM2(address_rwd, -rightRear);
+    roboclaw.BackwardM1(address_left, abs(rightRear));
   }
-  
+
+  if (rightFront > 0) {
+    roboclaw.ForwardM2(address_right, rightFront);
+  } else {
+    roboclaw.BackwardM2(address_right, abs(rightFront));
+  }
+
 }
