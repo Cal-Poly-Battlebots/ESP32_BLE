@@ -34,7 +34,6 @@ String abilityBar = "";
 
 float maxMagnitude = 50.0;
 int maxMotorPower = 127;
-float turningPower = 0.4; // 40% turning power, 60% reserved for translation
 
 // UART service UUID data
 #define SERVICE_UUID     "6E400001-B5A3-F393-E0A9-E50E24DCCA9E"
@@ -129,44 +128,23 @@ void setup() {
 }
 
 void loop() {
-  // Values will be read when the characteristics are accessed by the iOS app
-  //  Serial.println("Joystick (Angle, Magnitude): " + String(joystickAngle) + ", " + String(joystickMagnitude));
-  //  Serial.println("Swipe (Angle, Magnitude): " + String(swipeAngle) + ", " + String(swipeMagnitude));
-  //  Serial.println("Ability Bar (Binary String): " + abilityBar);
-
   // Mecanum drive based on the BLE readings
   float power = joystickMagnitude / maxMagnitude;// Normalize power 0-1
   float anglesToRadians = 0.01745329252;
-  float sine = sin((joystickAngle * anglesToRadians) - (PI / 4));
-  float cosine = cos((joystickAngle * anglesToRadians) - (PI / 4));
+  float sine = sin(((joystickAngle * anglesToRadians) - (PI / 4)));
+  float cosine = cos(((joystickAngle * anglesToRadians) - (PI / 4)));
   float maximum = max(abs(sine), abs(cosine));// 0 to 1
-//  Serial.print("Cosine: ");
-//  Serial.println(cosine, DEC);
-//  Serial.print("Sine: ");
-//  Serial.println(sine, DEC);
-//  Serial.print("max: ");
-//  Serial.println(maximum, DEC);
 
   // sine yields -1.0 to 1.0, swipe magnitude is 0-50, then -50.0 to 50.0 is normalized to -1.0 to 1.0
-  float turn = sin(swipeAngle * anglesToRadians) * swipeMagnitude / maxMagnitude;
-  int turnNormalized = turn * maxMotorPower * turningPower;  // -1 to 1 ---> percent of -maxMotorPower to maxMotorPower
+  float turn = sin((swipeAngle * anglesToRadians)) * swipeMagnitude / maxMagnitude;
+  int turnNormalized = turn * maxMotorPower;// -maxMotorPower to maxMotorPower
 
   // Motor speeds 0 to max motor power
-  int leftFront = power * maxMotorPower * cosine / maximum + turnNormalized;// turn is 0-maxMotorPower added onto translation power 0-maxMotorPower
-  int rightFront = power * maxMotorPower * sine / maximum - turnNormalized;
-  int leftRear = power * maxMotorPower * sine / maximum + turnNormalized;
-  int rightRear = power * maxMotorPower * cosine / maximum - turnNormalized;
-
-//  Serial.print("A Left Front: ");
-//  Serial.println(leftFront, DEC);
-//  Serial.print("A Left Rear: ");
-//  Serial.println(leftRear, DEC);
-//  Serial.print("A Right Front: ");
-//  Serial.println(rightFront, DEC);
-//  Serial.print("A Right Rear: ");
-//  Serial.println(rightRear, DEC);
-//  Serial.print("A Angle: ");
-//  Serial.println(joystickAngle, DEC);
+  // Negative sign because motors are on the outside
+  int leftFront = power * maxMotorPower * sine / maximum + turnNormalized;// turn is 0-maxMotorPower added onto translation power 0-maxMotorPower
+  int rightFront = -(power * maxMotorPower * cosine / maximum - turnNormalized);
+  int leftRear = power * maxMotorPower * cosine / maximum + turnNormalized;
+  int rightRear = -(power * maxMotorPower * sine / maximum - turnNormalized);
 
   // If one is overpowered, make sure it maxes out and the rest are scaled down with it
   if (power * maxMotorPower + abs(turnNormalized) > maxMotorPower) {
@@ -177,43 +155,16 @@ void loop() {
     rightRear = (rightRear / (power * maxMotorPower + abs(turnNormalized))) * maxMotorPower;
   }
 
-  leftFront = -leftFront;
-  leftRear = -leftRear;
+  // -127 to 127 --convert--> 0 to 127
+  leftRear = (leftRear + 127) / 2;
+  leftFront = (leftFront + 127) / 2;
+  rightRear = (rightRear + 127) / 2;
+  rightFront = (rightFront + 127) / 2;
 
-  int motorDelay = 0;//ms
-//  Serial.print("Left Front: ");
-//  Serial.println(leftFront, DEC);
-//  Serial.print("Left Rear: ");
-//  Serial.println(leftRear, DEC);
-//  Serial.print("Right Front: ");
-//  Serial.println(rightFront, DEC);
-//  Serial.print("Right Rear: ");
-//  Serial.println(rightRear, DEC);
-//  Serial.print("Angle: ");
-//  Serial.println(joystickAngle, DEC);
-
-  if (leftRear > 0) {
-    roboclaw.ForwardM2(address_left, leftRear);
-  } else {
-    roboclaw.BackwardM2(address_left, abs(leftRear));
-  }
-
-  if (leftFront > 0) {
-    roboclaw.ForwardM1(address_right, leftFront);
-  } else {
-    roboclaw.BackwardM1(address_right, abs(leftFront));
-  }
-
-  if (rightRear > 0) {
-    roboclaw.ForwardM1(address_left, rightRear);
-  } else {
-    roboclaw.BackwardM1(address_left, abs(rightRear));
-  }
-
-  if (rightFront > 0) {
-    roboclaw.ForwardM2(address_right, rightFront);
-  } else {
-    roboclaw.BackwardM2(address_right, abs(rightFront));
-  }
+  // Control motors
+  roboclaw.ForwardBackwardM2(address_left, leftRear);
+  roboclaw.ForwardBackwardM1(address_right, leftFront);
+  roboclaw.ForwardBackwardM1(address_left, rightRear);
+  roboclaw.ForwardBackwardM2(address_right, rightFront);
 
 }
