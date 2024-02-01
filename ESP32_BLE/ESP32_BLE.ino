@@ -13,6 +13,20 @@
 #include <BLE2902.h>
 #include <RoboClaw.h>
 
+//---------RTOS--------------------
+// define two tasks for reading from ble and writing to serial
+void TaskWriteToSerial(void *pvParameters);
+void TaskReadFromBLE(void *pvParameters);
+
+// Define Queue handle
+QueueHandle_t QueueHandle;
+const int QueueElementSize = 10;
+
+typedef struct{
+  float angle;
+  float magnitude;
+} input_t;
+
 //---------RoboClaw----------------
 RoboClaw roboclaw(&Serial2, 10000);
 #define address_right 0x80 // 128
@@ -54,48 +68,94 @@ class MyServerCallbacks : public BLEServerCallbacks {
 };
 
 class MyReadCallbacks : public BLECharacteristicCallbacks {
+    input_t command;
     void onWrite(BLECharacteristic *pCharacteristic) {
-      if (pCharacteristic == joystickCharacteristic) {
-        // Read data from joystickCharacteristic
-        std::string value = pCharacteristic->getValue();
+      if (QueueHandle != NULL && uxQueueSpacesAvailable(QueueHandle) > 0) 
+      {
+        if (pCharacteristic == joystickCharacteristic) 
+        {
+          // Read data from joystickCharacteristic
+          std::string value = pCharacteristic->getValue();
 
-        // Parse received data (assuming it's in format "angle,magnitude")
-        int commaIndex = value.find(',');
-        if (commaIndex != -1 && value.length() > commaIndex + 1) {
-          String angleStr = value.substr(0, commaIndex).c_str();
-          String magnitudeStr = value.substr(commaIndex + 1).c_str();
+          // Parse received data (assuming it's in format "angle,magnitude")
+          int commaIndex = value.find(',');
+          if (commaIndex != -1 && value.length() > commaIndex + 1) 
+          {
+            String angleStr = value.substr(0, commaIndex).c_str();
+            String magnitudeStr = value.substr(commaIndex + 1).c_str();
 
-          // Update ESP32 variables with parsed values
-          joystickAngle = angleStr.toFloat();
-          joystickMagnitude = magnitudeStr.toFloat();
-        }
-      } else if (pCharacteristic == swipeCharacteristic) {
-        // Read data from joystickCharacteristic
-        std::string value = pCharacteristic->getValue();
+            // Update ESP32 variables with parsed values
+            command.angle = angleStr.toFloat();
+            command.magnitude = magnitudeStr.toFloat();
+          }
+        } 
 
-        // Parse received data (assuming it's in format "angle,magnitude")
-        int commaIndex = value.find(',');
-        if (commaIndex != -1 && value.length() > commaIndex + 1) {
-          String angleStr = value.substr(0, commaIndex).c_str();
-          String magnitudeStr = value.substr(commaIndex + 1).c_str();
+      int ret = xQueueSend(QueueHandle, (void*) &command, 0);
 
-          // Update ESP32 variables with parsed values
-          swipeAngle = angleStr.toFloat();
-          swipeMagnitude = magnitudeStr.toFloat();
-        }
-      } else if (pCharacteristic == abilityCharacteristic) {
-        std::string value = pCharacteristic->getValue();
-        abilityBar = String(value.c_str());
+      if (ret == pdTRUE){
+
       }
+      else if (ret == errQUEUE_FULL) {
+        Serial.println("Queue full error");
+      }
+
+      }
+
+      // else if (pCharacteristic == swipeCharacteristic) {
+      //   // Read data from joystickCharacteristic
+      //   std::string value = pCharacteristic->getValue();
+
+      //   // Parse received data (assuming it's in format "angle,magnitude")
+      //   int commaIndex = value.find(',');
+      //   if (commaIndex != -1 && value.length() > commaIndex + 1) {
+      //     String angleStr = value.substr(0, commaIndex).c_str();
+      //     String magnitudeStr = value.substr(commaIndex + 1).c_str();
+
+      //     // Update ESP32 variables with parsed values
+      //     swipeAngle = angleStr.toFloat();
+      //     swipeMagnitude = magnitudeStr.toFloat();
+      //   }
+      // } else if (pCharacteristic == abilityCharacteristic) {
+      //   std::string value = pCharacteristic->getValue();
+      //   abilityBar = String(value.c_str());
+      // }
     }
 };
 
 void setup() {
   Serial.begin(9600);
-  delay(1000); // Add a delay to prevent issues initializing BLE after flashing
-  BLEDevice::init("ESP32_BLE"); // Set BLE device name
+  while(!Serial){delay(10);};// Add a delay to prevent issues initializing BLE after flashing
+  BLEDevice::init("ESP32_BLE-2"); // Set BLE device name
   BLEServer *pServer = BLEDevice::createServer(); // Create BLE server
   pServer->setCallbacks(new MyServerCallbacks());
+
+  // Create the queue handle with <QueueElementSize> number of elements
+  QueueHandle = xQueueCreate(QueueElementSize, sizeof(input_t));
+
+  // Check if the queue was created
+  if (QueueHandle == NULL) {
+    Serial.println("Queue could not be created. Program is halted.");
+    while(1) delay(1000);
+  }
+
+  // Write to Serial task for debugging
+  xTaskCreate(
+    TaskWriteToSerial,
+      "Task Write To Serial", // name for convenience
+      2048,                   // stack size
+      NULL,                   // no params
+      2,                      // prio of 2
+      NULL                    // task handle is not used here
+  );
+
+  // xTaskCreate(
+  //   TaskReadFromBLE,
+  //     "Task Read From BLE",
+  //     2048,
+  //     NULL,
+  //     3,
+  //     NULL
+  // );
 
   // Create the BLE Service
   BLEService *pService = pServer->createService(SERVICE_UUID);
@@ -107,17 +167,17 @@ void setup() {
   joystickCharacteristic->addDescriptor(new BLE2902());
   joystickCharacteristic->setCallbacks(new MyReadCallbacks());
 
-  swipeCharacteristic = pService->createCharacteristic(
-                          SWIPE_UUID,
-                          BLECharacteristic::PROPERTY_WRITE_NR | BLECharacteristic::PROPERTY_READ | BLECharacteristic::PROPERTY_NOTIFY);
-  swipeCharacteristic->addDescriptor(new BLE2902());
-  swipeCharacteristic->setCallbacks(new MyReadCallbacks());
+  // swipeCharacteristic = pService->createCharacteristic(
+  //                         SWIPE_UUID,
+  //                         BLECharacteristic::PROPERTY_WRITE_NR | BLECharacteristic::PROPERTY_READ | BLECharacteristic::PROPERTY_NOTIFY);
+  // swipeCharacteristic->addDescriptor(new BLE2902());
+  // swipeCharacteristic->setCallbacks(new MyReadCallbacks());
 
-  abilityCharacteristic = pService->createCharacteristic(
-                            ABILITY_UUID,
-                            BLECharacteristic::PROPERTY_WRITE_NR | BLECharacteristic::PROPERTY_READ | BLECharacteristic::PROPERTY_NOTIFY);
-  abilityCharacteristic->addDescriptor(new BLE2902());
-  abilityCharacteristic->setCallbacks(new MyReadCallbacks());
+  // abilityCharacteristic = pService->createCharacteristic(
+  //                           ABILITY_UUID,
+  //                           BLECharacteristic::PROPERTY_WRITE_NR | BLECharacteristic::PROPERTY_READ | BLECharacteristic::PROPERTY_NOTIFY);
+  // abilityCharacteristic->addDescriptor(new BLE2902());
+  // abilityCharacteristic->setCallbacks(new MyReadCallbacks());
 
   pService->start(); // Start the service
   pServer->getAdvertising()->start(); // Start advertising
@@ -167,4 +227,22 @@ void loop() {
   roboclaw.ForwardBackwardM1(address_left, rightRear);
   roboclaw.ForwardBackwardM2(address_right, rightFront);
 
+}
+
+void TaskWriteToSerial(void *pvParameters){  // This is a task.
+  input_t command;
+  for (;;){ // A Task shall never return or exit.
+    // One approach would be to poll the function (uxQueueMessagesWaiting(QueueHandle) and call delay if nothing is waiting.
+    // The other approach is to use infinite time to wait defined by constant `portMAX_DELAY`:
+    if(QueueHandle != NULL){ // Sanity check just to make sure the queue actually exists
+      int ret = xQueueReceive(QueueHandle, &command, portMAX_DELAY);
+      if(ret == pdPASS){
+        // The message was successfully received - send it back to Serial port and "Echo: "
+        Serial.printf("Input angle: %f, Input Mag: %f\n", command.angle, command.magnitude);
+        // The item is queued by copy, not by reference, so lets free the buffer after use.
+      }else if(ret == pdFALSE){
+        Serial.println("The `TaskWriteToSerial` was unable to receive data from the Queue");
+      }
+    } // Sanity check
+  } // Infinite loop
 }
