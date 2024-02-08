@@ -20,7 +20,7 @@ void TaskReadFromBLE(void *pvParameters);
 
 // Define Queue handle
 QueueHandle_t QueueHandle;
-const int QueueElementSize = 10;
+const int QueueElementSize = 50;
 
 typedef struct{
   float angle;
@@ -70,6 +70,7 @@ class MyServerCallbacks : public BLEServerCallbacks {
 class MyReadCallbacks : public BLECharacteristicCallbacks {
     input_t command;
     void onWrite(BLECharacteristic *pCharacteristic) {
+      Serial.println("Entered the asynch read");
       if (QueueHandle != NULL && uxQueueSpacesAvailable(QueueHandle) > 0) 
       {
         if (pCharacteristic == joystickCharacteristic) 
@@ -87,8 +88,9 @@ class MyReadCallbacks : public BLECharacteristicCallbacks {
             // Update ESP32 variables with parsed values
             command.angle = angleStr.toFloat();
             command.magnitude = magnitudeStr.toFloat();
+            Serial.println("fuck off");
           }
-        } 
+        }
 
       int ret = xQueueSend(QueueHandle, (void*) &command, 0);
 
@@ -125,7 +127,7 @@ class MyReadCallbacks : public BLECharacteristicCallbacks {
 void setup() {
   Serial.begin(9600);
   while(!Serial){delay(10);};// Add a delay to prevent issues initializing BLE after flashing
-  BLEDevice::init("ESP32_BLE-2"); // Set BLE device name
+  BLEDevice::init("ESP32_BLE_Test"); // Set BLE device name
   BLEServer *pServer = BLEDevice::createServer(); // Create BLE server
   pServer->setCallbacks(new MyServerCallbacks());
 
@@ -144,7 +146,7 @@ void setup() {
       "Task Write To Serial", // name for convenience
       2048,                   // stack size
       NULL,                   // no params
-      2,                      // prio of 2
+      3,                      // prio of 2
       NULL                    // task handle is not used here
   );
 
@@ -189,44 +191,52 @@ void setup() {
 
 void loop() {
   // Mecanum drive based on the BLE readings
-  float power = joystickMagnitude / maxMagnitude;// Normalize power 0-1
-  float anglesToRadians = 0.01745329252;
-  float sine = sin(((joystickAngle * anglesToRadians) - (PI / 4)));
-  float cosine = cos(((joystickAngle * anglesToRadians) - (PI / 4)));
-  float maximum = max(abs(sine), abs(cosine));// 0 to 1
+  // float power = joystickMagnitude / maxMagnitude;// Normalize power 0-1
+  // float anglesToRadians = 0.01745329252;
+  // float sine = sin(((joystickAngle * anglesToRadians) - (PI / 4)));
+  // float cosine = cos(((joystickAngle * anglesToRadians) - (PI / 4)));
+  // float maximum = max(abs(sine), abs(cosine));// 0 to 1
 
-  // sine yields -1.0 to 1.0, swipe magnitude is 0-50, then -50.0 to 50.0 is normalized to -1.0 to 1.0
-  float turn = sin((swipeAngle * anglesToRadians)) * swipeMagnitude / maxMagnitude;
-  int turnNormalized = turn * maxMotorPower;// -maxMotorPower to maxMotorPower
+  // // sine yields -1.0 to 1.0, swipe magnitude is 0-50, then -50.0 to 50.0 is normalized to -1.0 to 1.0
+  // float turn = sin((swipeAngle * anglesToRadians)) * swipeMagnitude / maxMagnitude;
+  // int turnNormalized = turn * maxMotorPower;// -maxMotorPower to maxMotorPower
 
-  // Motor speeds 0 to max motor power
-  // Negative sign because motors are on the outside
-  int leftFront = power * maxMotorPower * sine / maximum + turnNormalized;// turn is 0-maxMotorPower added onto translation power 0-maxMotorPower
-  int rightFront = -(power * maxMotorPower * cosine / maximum - turnNormalized);
-  int leftRear = power * maxMotorPower * cosine / maximum + turnNormalized;
-  int rightRear = -(power * maxMotorPower * sine / maximum - turnNormalized);
+  // // Motor speeds 0 to max motor power
+  // // Negative sign because motors are on the outside
+  // int leftFront = power * maxMotorPower * sine / maximum + turnNormalized;// turn is 0-maxMotorPower added onto translation power 0-maxMotorPower
+  // int rightFront = -(power * maxMotorPower * cosine / maximum - turnNormalized);
+  // int leftRear = power * maxMotorPower * cosine / maximum + turnNormalized;
+  // int rightRear = -(power * maxMotorPower * sine / maximum - turnNormalized);
 
-  // If one is overpowered, make sure it maxes out and the rest are scaled down with it
-  if (power * maxMotorPower + abs(turnNormalized) > maxMotorPower) {
-    // -maxMotorPower to maxMotorPower
-    leftFront = (leftFront / (power * maxMotorPower + abs(turnNormalized))) * maxMotorPower;
-    rightFront = (rightFront / (power * maxMotorPower + abs(turnNormalized))) * maxMotorPower;
-    leftRear = (leftRear / (power * maxMotorPower + abs(turnNormalized))) * maxMotorPower;
-    rightRear = (rightRear / (power * maxMotorPower + abs(turnNormalized))) * maxMotorPower;
+  // // If one is overpowered, make sure it maxes out and the rest are scaled down with it
+  // if (power * maxMotorPower + abs(turnNormalized) > maxMotorPower) {
+  //   // -maxMotorPower to maxMotorPower
+  //   leftFront = (leftFront / (power * maxMotorPower + abs(turnNormalized))) * maxMotorPower;
+  //   rightFront = (rightFront / (power * maxMotorPower + abs(turnNormalized))) * maxMotorPower;
+  //   leftRear = (leftRear / (power * maxMotorPower + abs(turnNormalized))) * maxMotorPower;
+  //   rightRear = (rightRear / (power * maxMotorPower + abs(turnNormalized))) * maxMotorPower;
+  // }
+
+  // // -127 to 127 --convert--> 0 to 127
+  // leftRear = (leftRear + 127) / 2;
+  // leftFront = (leftFront + 127) / 2;
+  // rightRear = (rightRear + 127) / 2;
+  // rightFront = (rightFront + 127) / 2;
+
+  // // Control motors
+  // roboclaw.ForwardBackwardM2(address_left, leftRear);
+  // roboclaw.ForwardBackwardM1(address_right, leftFront);
+  // roboclaw.ForwardBackwardM1(address_left, rightRear);
+  // roboclaw.ForwardBackwardM2(address_right, rightFront);
+  Serial.println("Loop");
+  delay(1000);
+}
+
+void TaskReadFromBLE(void *pvParamters) {
+  input_t command;
+  for (;;) { // A task doesn't return or exit
+    
   }
-
-  // -127 to 127 --convert--> 0 to 127
-  leftRear = (leftRear + 127) / 2;
-  leftFront = (leftFront + 127) / 2;
-  rightRear = (rightRear + 127) / 2;
-  rightFront = (rightFront + 127) / 2;
-
-  // Control motors
-  roboclaw.ForwardBackwardM2(address_left, leftRear);
-  roboclaw.ForwardBackwardM1(address_right, leftFront);
-  roboclaw.ForwardBackwardM1(address_left, rightRear);
-  roboclaw.ForwardBackwardM2(address_right, rightFront);
-
 }
 
 void TaskWriteToSerial(void *pvParameters){  // This is a task.
@@ -237,9 +247,12 @@ void TaskWriteToSerial(void *pvParameters){  // This is a task.
     if(QueueHandle != NULL){ // Sanity check just to make sure the queue actually exists
       int ret = xQueueReceive(QueueHandle, &command, portMAX_DELAY);
       if(ret == pdPASS){
-        // The message was successfully received - send it back to Serial port and "Echo: "
-        Serial.printf("Input angle: %f, Input Mag: %f\n", command.angle, command.magnitude);
+        // if the angle and mag are not both 0
+        // if(command.angle != 90 && command.magnitude != 0) {
+          // The message was successfully received - send it back to Serial port and "Echo: "
+          Serial.printf("Input angle: %f, Input Mag: %f\n", command.angle, command.magnitude);
         // The item is queued by copy, not by reference, so lets free the buffer after use.
+        // }
       }else if(ret == pdFALSE){
         Serial.println("The `TaskWriteToSerial` was unable to receive data from the Queue");
       }
