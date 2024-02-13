@@ -6,6 +6,9 @@
    Sets up a BLE server and reads 3 characteristics
    Uses FreeRTOS underneath Arduino execution
    For communication with an iOS app
+
+   Mecanum Field-Oriented Control implemented using an IMU
+   Converts sensor data to Euler Angles
 */
 #include <BLEDevice.h>
 #include <BLEServer.h>
