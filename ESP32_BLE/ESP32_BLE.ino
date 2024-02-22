@@ -12,6 +12,10 @@
 #include <BLEUtils.h>
 #include <BLE2902.h>
 #include <RoboClaw.h>
+#include "soc/dport_reg.h"
+#include "soc/gpio_reg.h"
+
+
 
 //---------RTOS--------------------
 // define two tasks for reading from ble and writing to serial
@@ -22,7 +26,7 @@ void TaskReadFromBLE(void *pvParameters);
 QueueHandle_t QueueHandle;
 const int QueueElementSize = 50;
 
-typedef struct{
+typedef struct {
   float angle;
   float magnitude;
 } input_t;
@@ -70,17 +74,17 @@ class MyServerCallbacks : public BLEServerCallbacks {
 class MyReadCallbacks : public BLECharacteristicCallbacks {
     input_t command;
     void onWrite(BLECharacteristic *pCharacteristic) {
-      Serial.println("Entered the asynch read");
-      if (QueueHandle != NULL && uxQueueSpacesAvailable(QueueHandle) > 0) 
+      // Serial.println("Entered the asynch read");
+      if (QueueHandle != NULL && uxQueueSpacesAvailable(QueueHandle) > 0)
       {
-        if (pCharacteristic == joystickCharacteristic) 
+        if (pCharacteristic == joystickCharacteristic)
         {
           // Read data from joystickCharacteristic
           std::string value = pCharacteristic->getValue();
 
           // Parse received data (assuming it's in format "angle,magnitude")
           int commaIndex = value.find(',');
-          if (commaIndex != -1 && value.length() > commaIndex + 1) 
+          if (commaIndex != -1 && value.length() > commaIndex + 1)
           {
             String angleStr = value.substr(0, commaIndex).c_str();
             String magnitudeStr = value.substr(commaIndex + 1).c_str();
@@ -88,18 +92,17 @@ class MyReadCallbacks : public BLECharacteristicCallbacks {
             // Update ESP32 variables with parsed values
             command.angle = angleStr.toFloat();
             command.magnitude = magnitudeStr.toFloat();
-            Serial.println("fuck off");
           }
         }
 
-      int ret = xQueueSend(QueueHandle, (void*) &command, 0);
+        int ret = xQueueSend(QueueHandle, (void*) &command, 0);
 
-      if (ret == pdTRUE){
+        if (ret == pdTRUE) {
 
-      }
-      else if (ret == errQUEUE_FULL) {
-        Serial.println("Queue full error");
-      }
+        }
+        else if (ret == errQUEUE_FULL) {
+          Serial.println("Queue full error");
+        }
 
       }
 
@@ -126,7 +129,9 @@ class MyReadCallbacks : public BLECharacteristicCallbacks {
 
 void setup() {
   Serial.begin(9600);
-  while(!Serial){delay(10);};// Add a delay to prevent issues initializing BLE after flashing
+  while (!Serial) {
+    delay(10);
+  };// Add a delay to prevent issues initializing BLE after flashing
   BLEDevice::init("ESP32_BLE_Test"); // Set BLE device name
   BLEServer *pServer = BLEDevice::createServer(); // Create BLE server
   pServer->setCallbacks(new MyServerCallbacks());
@@ -137,17 +142,17 @@ void setup() {
   // Check if the queue was created
   if (QueueHandle == NULL) {
     Serial.println("Queue could not be created. Program is halted.");
-    while(1) delay(1000);
+    while (1) delay(1000);
   }
 
   // Write to Serial task for debugging
   xTaskCreate(
     TaskWriteToSerial,
-      "Task Write To Serial", // name for convenience
-      2048,                   // stack size
-      NULL,                   // no params
-      3,                      // prio of 2
-      NULL                    // task handle is not used here
+    "Task Write To Serial", // name for convenience
+    2048,                   // stack size
+    NULL,                   // no params
+    3,                      // prio of 2
+    NULL                    // task handle is not used here
   );
 
   // xTaskCreate(
@@ -228,32 +233,39 @@ void loop() {
   // roboclaw.ForwardBackwardM1(address_right, leftFront);
   // roboclaw.ForwardBackwardM1(address_left, rightRear);
   // roboclaw.ForwardBackwardM2(address_right, rightFront);
-  Serial.println("Loop");
+    // DEBUG
   delay(1000);
 }
 
-void TaskReadFromBLE(void *pvParamters) {
+void TaskMoveRobot(void *pvParamters) {
   input_t command;
   for (;;) { // A task doesn't return or exit
-    
+    //
+
+    if (QueueHandle != NULL) {
+      int ret = xQueueReceive(QueueHandle, &command, portMAX_DELAY);
+      if (ret == pdPASS) {
+
+      }
+    }
   }
 }
 
-void TaskWriteToSerial(void *pvParameters){  // This is a task.
+void TaskWriteToSerial(void *pvParameters) { // This is a task.
   input_t command;
-  for (;;){ // A Task shall never return or exit.
+  for (;;) { // A Task shall never return or exit.
     // One approach would be to poll the function (uxQueueMessagesWaiting(QueueHandle) and call delay if nothing is waiting.
     // The other approach is to use infinite time to wait defined by constant `portMAX_DELAY`:
-    if(QueueHandle != NULL){ // Sanity check just to make sure the queue actually exists
+    if (QueueHandle != NULL) { // Sanity check just to make sure the queue actually exists
       int ret = xQueueReceive(QueueHandle, &command, portMAX_DELAY);
-      if(ret == pdPASS){
+      if (ret == pdPASS) {
         // if the angle and mag are not both 0
-        // if(command.angle != 90 && command.magnitude != 0) {
-          // The message was successfully received - send it back to Serial port and "Echo: "
+        if(command.angle != 0 && command.magnitude != 0) {
+        // The message was successfully received - send it back to Serial port and "Echo: "
           Serial.printf("Input angle: %f, Input Mag: %f\n", command.angle, command.magnitude);
         // The item is queued by copy, not by reference, so lets free the buffer after use.
-        // }
-      }else if(ret == pdFALSE){
+         }
+      } else if (ret == pdFALSE) {
         Serial.println("The `TaskWriteToSerial` was unable to receive data from the Queue");
       }
     } // Sanity check
