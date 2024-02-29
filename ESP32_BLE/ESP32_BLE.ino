@@ -21,6 +21,8 @@
 #include <Adafruit_BNO055.h>
 #include <utility/imumaths.h>
 
+#define LED_PIN 25
+
 //---------RoboClaw----------------
 RoboClaw roboclaw(&Serial2, 10000);
 #define address_right 0x80 // 128
@@ -29,19 +31,18 @@ RoboClaw roboclaw(&Serial2, 10000);
 #define PI 3.14159
 
 #define TURN_RATIO 0.55
+#define POWER_ADJ 1.0
 
 //---------IMU---------------------
-#define WIRE_PORT Wire // Your desired Wire port.      Used when "USE_SPI" is not defined
-// The value of the last bit of the I2C address.
-// On the SparkFun 9DoF IMU breakout the default is 1, and when the ADR jumper is closed the value becomes 0
-#define AD0_VAL 1
-
 /* Set the delay between fresh samples */
 #define BNO055_SAMPLERATE_DELAY_MS (100)
+#define IMU_ADDR 0x28
 
 // Check I2C device address and correct line below (by default address is 0x29 or 0x28)
 //                                   id, address
-Adafruit_BNO055 bno = Adafruit_BNO055(0x28);
+Adafruit_BNO055 bno = Adafruit_BNO055(IMU_ADDR);
+
+bool fieldOriented = true;
 
 //---------BLE---------------------
 BLECharacteristic *joystickCharacteristic;
@@ -77,10 +78,13 @@ void killMotors() {
 
 class MyServerCallbacks : public BLEServerCallbacks {
     void onConnect(BLEServer *pServer) {
+      digitalWrite(LED_PIN, HIGH);
       Serial.println("Device connected.");
+      
       deviceConnected = true;
     };
     void onDisconnect(BLEServer *pServer) {
+      digitalWrite(LED_PIN, LOW);
       killMotors();
       Serial.println("Device disconnected.");
       deviceConnected = false;
@@ -123,6 +127,11 @@ class MyReadCallbacks : public BLECharacteristicCallbacks {
       } else if (pCharacteristic == abilityCharacteristic) {
         std::string value = pCharacteristic->getValue();
         abilityBar = String(value.c_str());
+        // Process the ability string
+        if (abilityBar.length() > 2) {
+          // "010" means field oriented enable
+          fieldOriented = (abilityBar[1] == '1');
+        }
       }
     }
 };
@@ -173,6 +182,10 @@ float readIMU() {
 }
 
 void setup() {
+  // Initialize RoboClaws with baud rate
+  roboclaw.begin(38400);
+  // Immediately set roboclaw to 0 in case of reset
+  killMotors();
   Serial.begin(9600);
   delay(1000); // Add a delay to prevent issues initializing BLE after flashing
   BLEDevice::init("ESP32_BLE"); // Set BLE device name
@@ -205,9 +218,6 @@ void setup() {
   pServer->getAdvertising()->start(); // Start advertising
   Serial.println("Waiting for a client connection...");
 
-  // Initialize RoboClaws with baud rate
-  roboclaw.begin(38400);
-
   // ------------ Initialize IMU -----------
   /* Initialize the sensor */
   if (!bno.begin())
@@ -220,18 +230,26 @@ void setup() {
   /* Use external crystal for better accuracy */
   bno.setExtCrystalUse(true);
 
+  pinMode(LED_PIN, OUTPUT);
 }
 
 void loop() {
   if (!deviceConnected) {
+    digitalWrite(LED_PIN, LOW);
+    Serial.println("Uh oh");
     killMotors();
     return;
   }
+  
   // Read IMU first get angle 0-360
   float angleFacing = readIMU();
 
+  if (!fieldOriented) {
+    angleFacing = 0;
+  }
+
   // Mecanum drive based on the BLE readings
-  float power = joystickMagnitude / maxMagnitude;// Normalize power 0-1
+  float power = joystickMagnitude / maxMagnitude * POWER_ADJ;// Normalize power 0-1
   float anglesToRadians = 0.01745329252;
   // 360 values of precision
   int trueAngle = (int) round((joystickAngle - angleFacing)) % 360;
