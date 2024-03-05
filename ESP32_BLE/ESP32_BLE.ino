@@ -75,11 +75,15 @@ int maxMotorPower = 127;
 void killMotors() {
   // Disconnect power from the motors
   digitalWrite(KILL_PIN, HIGH);
+
+  // Set variables to 0 just in case
+  joystickMagnitude = 0;
+  swipeMagnitude = 0;
   
-//  roboclaw.ForwardM2(address_left, 0);
-//  roboclaw.ForwardM1(address_right, 0);
-//  roboclaw.ForwardM1(address_left, 0);
-//  roboclaw.ForwardM2(address_right, 0);
+  roboclaw.ForwardM2(address_left, 0);
+  roboclaw.ForwardM1(address_right, 0);
+  roboclaw.ForwardM1(address_left, 0);
+  roboclaw.ForwardM2(address_right, 0);
   
   delay(1000);
 }
@@ -97,8 +101,7 @@ class MyServerCallbacks : public BLEServerCallbacks {
       Serial.println("Device disconnected.");
       deviceConnected = false;
       pServer->getAdvertising()->start(); // Restart advertising
-      joystickMagnitude = 0;
-      swipeMagnitude = 0;
+      killMotors();
     }
 };
 
@@ -151,7 +154,7 @@ class MyReadCallbacks : public BLECharacteristicCallbacks {
           if (value[2] == '0') {
             // ESTOP on
 //            Serial.println("killing");
-            digitalWrite(KILL_PIN, HIGH);
+            killMotors();
           } else {
             // ESTOP off
             digitalWrite(KILL_PIN, LOW);
@@ -283,7 +286,7 @@ void loop() {
   
   if (!deviceConnected) {
     digitalWrite(LED_PIN, LOW);
-    Serial.println("Uh oh");
+    Serial.println("Waiting for connection...");
     killMotors();
     
     return;
