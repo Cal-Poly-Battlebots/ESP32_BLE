@@ -136,21 +136,21 @@ class MyReadCallbacks : public BLECharacteristicCallbacks {
         std::string value = pCharacteristic->getValue();
         // Process the ability string
         if (value.length() > 2) {
-          Serial.print("String: ");
-          Serial.println(String(value.c_str()));
+//          Serial.print("String: ");
+//          Serial.println(String(value.c_str()));
           
           // "010" means field oriented enable
           fieldOriented = (value[1] == '1');
-          if (value[1] == '1') {
-            Serial.println("FO on");
-          } else {
-            Serial.println("FO off");
-          }
+//          if (value[1] == '1') {
+//            Serial.println("FO on");
+//          } else {
+//            Serial.println("FO off");
+//          }
 
           // Toggle Kill Pin ESTOP using "001"
           if (value[2] == '0') {
             // ESTOP on
-            Serial.println("killing");
+//            Serial.println("killing");
             digitalWrite(KILL_PIN, HIGH);
           } else {
             // ESTOP off
@@ -209,14 +209,7 @@ float readIMU() {
 void setup() {
   Serial.begin(9600);
 
-  // ------------ Initialize WDT -----------
-  Serial.println("Configuring WDT...");
-  esp_task_wdt_init(WDT_TIMEOUT, true); //enable panic so ESP32 restarts
-  esp_task_wdt_add(NULL); //add current thread to WDT watch
-  pinMode(KILL_PIN, OUTPUT);
   killMotors();
-  
-  esp_task_wdt_reset();
   
   // Debug LED off
   pinMode(LED_PIN, OUTPUT);
@@ -226,14 +219,10 @@ void setup() {
   roboclaw.begin(38400);
   delay(400);
   
-  esp_task_wdt_reset();
-  
   // Immediately set roboclaw to 0 in case of reset
   killMotors();
   
   delay(1000); // Add a delay to prevent issues initializing BLE after flashing
-  
-  esp_task_wdt_reset();
   
   BLEDevice::init("ESP32_BLE"); // Set BLE device name
   BLEServer *pServer = BLEDevice::createServer(); // Create BLE server
@@ -260,16 +249,6 @@ void setup() {
                             BLECharacteristic::PROPERTY_WRITE_NR | BLECharacteristic::PROPERTY_READ | BLECharacteristic::PROPERTY_NOTIFY);
   abilityCharacteristic->addDescriptor(new BLE2902());
   abilityCharacteristic->setCallbacks(new MyReadCallbacks());
-
-  
-  esp_task_wdt_reset();
-  
-  pService->start(); // Start the service
-  pServer->getAdvertising()->start(); // Start advertising
-  Serial.println("Waiting for a client connection...");
-
-  
-  esp_task_wdt_reset();
   
   // ------------ Initialize IMU -----------
   /* Initialize the sensor */
@@ -278,23 +257,35 @@ void setup() {
     /* There was a problem detecting the BNO055 ... check your connections */
     Serial.print("Ooops, no BNO055 detected ... Check your wiring or I2C ADDR!");
     
-    esp_task_wdt_reset();
     while (1);
   }
 
   /* Use external crystal for better accuracy */
   bno.setExtCrystalUse(true);
+
+  // ------------ Initialize WDT -----------
+  Serial.println("Configuring WDT...");
+  esp_task_wdt_init(WDT_TIMEOUT, true); //enable panic so ESP32 restarts
+  esp_task_wdt_add(NULL); //add current thread to WDT watch
+  pinMode(KILL_PIN, OUTPUT);
+  
+  pService->start(); // Start the service
+  pServer->getAdvertising()->start(); // Start advertising
+  Serial.println("Waiting for a client connection...");
+
+  
+  esp_task_wdt_reset();
 }
 
 void loop() {
+  // Check in with Watchdog
+  esp_task_wdt_reset();
   
   if (!deviceConnected) {
     digitalWrite(LED_PIN, LOW);
     Serial.println("Uh oh");
     killMotors();
     
-    // Check in with watchdog
-    esp_task_wdt_reset();
     return;
   }
   
@@ -347,7 +338,4 @@ void loop() {
   roboclaw.ForwardBackwardM1(address_right, leftFront);
   roboclaw.ForwardBackwardM1(address_left, rightRear);
   roboclaw.ForwardBackwardM2(address_right, rightFront);
-
-  // Check in with Watchdog
-  esp_task_wdt_reset();
 }
