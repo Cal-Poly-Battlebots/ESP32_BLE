@@ -7,6 +7,7 @@ Controls Roboclaws and has IMU integration to guide field-oriented control.
 # Prerequisites
 ## Arduino IDE
 Download Arduino IDE (we use the legacy IDE v1.8.19 found at https://www.arduino.cc/en/software)
+
 Download .ino file and place in directory
 
 ## ESP32
