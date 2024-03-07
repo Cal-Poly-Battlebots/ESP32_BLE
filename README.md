@@ -1,5 +1,5 @@
 # Arduino (C++) Bluetooth Controller for Mecanum Battle Robot
-## Background
+# Background
 This repository contains the mecanum control system implemented in Arduino C++.
 It uses Bluetooth Low Energy to receive data over Bluetooth characteristics. Uses default Arduino BLE library and an Euler angle library provided below.
 Controls Roboclaws and has IMU integration to guide field-oriented control.
