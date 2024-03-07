@@ -16,7 +16,38 @@
 #include <BLE2902.h>
 #include <RoboClaw.h>
 #include <math.h>
-#include "ICM_20948.h"
+#include <Wire.h>
+#include <Adafruit_Sensor.h>
+#include <Adafruit_BNO055.h>
+#include <utility/imumaths.h>
+#include <esp_task_wdt.h>
+
+//3 seconds WDT
+#define WDT_TIMEOUT 3
+#define KILL_PIN 32
+
+#define LED_PIN 25
+
+//---------RTOS--------------------
+// define two tasks for reading from ble and writing to serial
+void TaskWriteToSerial(void *pvParameters);
+void TaskMoveRobot(void *pvParameters);
+void TaskReadFromBLE(void *pvParameters);
+
+//---------QUEUE-------------------
+QueueHandle_t QueueHandle;
+const int QueueElementSize = 25;
+
+typedef struct {
+  int type; // 0 = joystick, 1 = swipe, 2 = ability
+  float joystickAngle;
+  float joystickMagnitude;
+  float swipeAngle; // Degrees
+  float swipeMagnitude = 0;
+} input_t;
+
+#define JOYSTICK 0
+#define SWIPE 1
 
 //---------RoboClaw----------------
 RoboClaw roboclaw(&Serial2, 10000);
@@ -26,14 +57,18 @@ RoboClaw roboclaw(&Serial2, 10000);
 #define PI 3.14159
 
 #define TURN_RATIO 0.55
+#define POWER_ADJ 0.80
 
 //---------IMU---------------------
-#define WIRE_PORT Wire // Your desired Wire port.      Used when "USE_SPI" is not defined
-// The value of the last bit of the I2C address.
-// On the SparkFun 9DoF IMU breakout the default is 1, and when the ADR jumper is closed the value becomes 0
-#define AD0_VAL 1
+/* Set the delay between fresh samples */
+#define BNO055_SAMPLERATE_DELAY_MS (100)
+#define IMU_ADDR 0x28
 
-ICM_20948_I2C myICM;
+// Check I2C device address and correct line below (by default address is 0x29 or 0x28)
+//                                   id, address
+Adafruit_BNO055 bno = Adafruit_BNO055(IMU_ADDR);
+
+bool fieldOriented = true;
 
 //---------BLE---------------------
 BLECharacteristic *joystickCharacteristic;
@@ -41,10 +76,10 @@ BLECharacteristic *swipeCharacteristic;
 BLECharacteristic *abilityCharacteristic;
 bool deviceConnected = false;
 
-float joystickAngle = 0; // Degrees
-float joystickMagnitude = 0;
-float swipeAngle = 0; // Degrees
-float swipeMagnitude = 0;
+//float joystickAngle = 0; // Degrees
+//float joystickMagnitude = 0;
+//float swipeAngle = 0; // Degrees
+//float swipeMagnitude = 0;
 String abilityBar = "";
 
 float maxMagnitude = 50.0;
@@ -56,21 +91,36 @@ int maxMotorPower = 127;
 #define SWIPE_UUID       "6E400003-B5A3-F393-E0A9-E50E24DCCA9E"
 #define ABILITY_UUID     "6E400004-B5A3-F393-E0A9-E50E24DCCA9E"
 
+void killMotors() {
+//  roboclaw.ForwardM2(address_left, 0);
+//  roboclaw.ForwardM1(address_right, 0);
+//  roboclaw.ForwardM1(address_left, 0);
+//  roboclaw.ForwardM2(address_right, 0);
+
+  digitalWrite(KILL_PIN, HIGH);
+  delay(1000);
+}
+
 class MyServerCallbacks : public BLEServerCallbacks {
     void onConnect(BLEServer *pServer) {
+      digitalWrite(LED_PIN, HIGH);
       Serial.println("Device connected.");
+      
       deviceConnected = true;
     };
     void onDisconnect(BLEServer *pServer) {
+      digitalWrite(LED_PIN, LOW);
+      killMotors();
       Serial.println("Device disconnected.");
       deviceConnected = false;
       pServer->getAdvertising()->start(); // Restart advertising
-      joystickMagnitude = 0;
-      swipeMagnitude = 0;
+//      joystickMagnitude = 0;
+//      swipeMagnitude = 0;
     }
 };
 
 class MyReadCallbacks : public BLECharacteristicCallbacks {
+    input_t command;
     void onWrite(BLECharacteristic *pCharacteristic) {
       if (pCharacteristic == joystickCharacteristic) {
         // Read data from joystickCharacteristic
@@ -83,8 +133,25 @@ class MyReadCallbacks : public BLECharacteristicCallbacks {
           String magnitudeStr = value.substr(commaIndex + 1).c_str();
 
           // Update ESP32 variables with parsed values
-          joystickAngle = angleStr.toFloat();
-          joystickMagnitude = magnitudeStr.toFloat();
+          command.joystickAngle = angleStr.toFloat();
+          command.joystickMagnitude = magnitudeStr.toFloat();
+          command.type = JOYSTICK;
+        }
+      }
+      else if (pCharacteristic == swipeCharacteristic) {
+        // Read data from joystickCharacteristic
+        std::string value = pCharacteristic->getValue();
+
+        // Parse received data (assuming it's in format "angle,magnitude")
+        int commaIndex = value.find(',');
+        if (commaIndex != -1 && value.length() > commaIndex + 1) {
+          String angleStr = value.substr(0, commaIndex).c_str();
+          String magnitudeStr = value.substr(commaIndex + 1).c_str();
+
+          // Update ESP32 variables with parsed values
+          command.swipeAngle = angleStr.toFloat();
+          command.swipeMagnitude = magnitudeStr.toFloat();
+          command.type = SWIPE;
         }
       } else if (pCharacteristic == swipeCharacteristic) {
         // Read data from joystickCharacteristic
@@ -97,90 +164,115 @@ class MyReadCallbacks : public BLECharacteristicCallbacks {
           String magnitudeStr = value.substr(commaIndex + 1).c_str();
 
           // Update ESP32 variables with parsed values
-          swipeAngle = angleStr.toFloat();
-          swipeMagnitude = magnitudeStr.toFloat();
+          command.swipeAngle = angleStr.toFloat();
+          command.swipeMagnitude = magnitudeStr.toFloat();
         }
       } else if (pCharacteristic == abilityCharacteristic) {
         std::string value = pCharacteristic->getValue();
-        abilityBar = String(value.c_str());
+        // Process the ability string
+        if (value.length() > 2) {
+          Serial.print("String: ");
+          Serial.println(String(value.c_str()));
+          
+          // "010" means field oriented enable
+          fieldOriented = (value[1] == '1');
+          if (value[1] == '1') {
+            Serial.println("FO on");
+          } else {
+            Serial.println("FO off");
+          }
+
+          // Toggle Kill Pin ESTOP using "001"
+          if (value[2] == '0') {
+            // ESTOP on
+            Serial.println("killing");
+            digitalWrite(KILL_PIN, HIGH);
+          } else {
+            // ESTOP off
+            digitalWrite(KILL_PIN, LOW);
+          }
+        }
       }
-    }
+  }
 };
 
 float readIMU() {
-  // Read any DMP data waiting in the FIFO
-  // Note:
-  //    readDMPdataFromFIFO will return ICM_20948_Stat_FIFONoDataAvail if no data is available.
-  //    If data is available, readDMPdataFromFIFO will attempt to read _one_ frame of DMP data.
-  //    readDMPdataFromFIFO will return ICM_20948_Stat_FIFOIncompleteData if a frame was present but was incomplete
-  //    readDMPdataFromFIFO will return ICM_20948_Stat_Ok if a valid frame was read.
-  //    readDMPdataFromFIFO will return ICM_20948_Stat_FIFOMoreDataAvail if a valid frame was read _and_ the FIFO contains more (unread) data.
-  icm_20948_DMP_data_t data;
-  myICM.readDMPdataFromFIFO(&data);
+  /* Get a new sensor event */
+  sensors_event_t event;
+  bno.getEvent(&event);
 
-  if ((myICM.status == ICM_20948_Stat_Ok) || (myICM.status == ICM_20948_Stat_FIFOMoreDataAvail)) // Was valid data available?
-  {
-    //SERIAL_PORT.print(F("Received data! Header: 0x")); // Print the header in HEX so we can see what data is arriving in the FIFO
-    //if ( data.header < 0x1000) SERIAL_PORT.print( "0" ); // Pad the zeros
-    //if ( data.header < 0x100) SERIAL_PORT.print( "0" );
-    //if ( data.header < 0x10) SERIAL_PORT.print( "0" );
-    //SERIAL_PORT.println( data.header, HEX );
+  /* Board layout:
+         +----------+
+         |         *| RST   PITCH  ROLL  HEADING
+     ADR |*        *| SCL
+     INT |*        *| SDA     ^            /->
+     PS1 |*        *| GND     |            |
+     PS0 |*        *| 3VO     Y    Z-->    \-X
+         |         *| VIN
+         +----------+
+  */
 
-    if ((data.header & DMP_header_bitmap_Quat6) > 0) // We have asked for GRV data so we should receive Quat6
-    {
-      // Q0 value is computed from this equation: Q0^2 + Q1^2 + Q2^2 + Q3^2 = 1.
-      // In case of drift, the sum will not add to 1, therefore, quaternion data need to be corrected with right bias values.
-      // The quaternion data is scaled by 2^30.
+  /* The processing sketch expects data as roll, pitch, heading */
+//  Serial.print(F("Orientation: "));
+//  Serial.print((float)event.orientation.x);
+//  Serial.print(F(" "));
+//  Serial.print((float)event.orientation.y);
+//  Serial.print(F(" "));
+//  Serial.print((float)event.orientation.z);
+//  Serial.println(F(""));
 
-      //SERIAL_PORT.printf("Quat6 data is: Q1:%ld Q2:%ld Q3:%ld\r\n", data.Quat6.Data.Q1, data.Quat6.Data.Q2, data.Quat6.Data.Q3);
+  /* Also send calibration data for each sensor. */
+  uint8_t sys, gyro, accel, mag = 0;
+  bno.getCalibration(&sys, &gyro, &accel, &mag);
+//  Serial.print(F("Calibration: "));
+//  Serial.print(sys, DEC);
+//  Serial.print(F(" "));
+//  Serial.print(gyro, DEC);
+//  Serial.print(F(" "));
+//  Serial.print(accel, DEC);
+//  Serial.print(F(" "));
+//  Serial.println(mag, DEC);
 
-      // Scale to +/- 1
-      double q1 = ((double)data.Quat6.Data.Q1) / 1073741824.0; // Convert to double. Divide by 2^30
-      double q2 = ((double)data.Quat6.Data.Q2) / 1073741824.0; // Convert to double. Divide by 2^30
-      double q3 = ((double)data.Quat6.Data.Q3) / 1073741824.0; // Convert to double. Divide by 2^30
+  delay(BNO055_SAMPLERATE_DELAY_MS);
+//
+//  Serial.print("Facing Angle: ");
+//  Serial.println(event.orientation.x);
 
-      // Convert the quaternions to Euler angles (roll, pitch, yaw)
-      // https://en.wikipedia.org/w/index.php?title=Conversion_between_quaternions_and_Euler_angles&section=8#Source_code_2
-
-      double q0 = sqrt(1.0 - ((q1 * q1) + (q2 * q2) + (q3 * q3)));
-
-      double q2sqr = q2 * q2;
-
-      // roll (x-axis rotation)
-      double t0 = +2.0 * (q0 * q1 + q2 * q3);
-      double t1 = +1.0 - 2.0 * (q1 * q1 + q2sqr);
-      double roll = atan2(t0, t1) * 180.0 / PI;
-
-      // pitch (y-axis rotation)
-      double t2 = +2.0 * (q0 * q2 - q3 * q1);
-      t2 = t2 > 1.0 ? 1.0 : t2;
-      t2 = t2 < -1.0 ? -1.0 : t2;
-      double pitch = asin(t2) * 180.0 / PI;
-
-      // yaw (z-axis rotation)
-      double t3 = +2.0 * (q0 * q3 + q1 * q2);
-      double t4 = +1.0 - 2.0 * (q2sqr + q3 * q3);
-      double yaw = atan2(t3, t4) * 180.0 / PI;
-
-      Serial.print("Yaw: ");
-      Serial.println(yaw);
-      return yaw;
-    }
-  }
-
-  if (myICM.status != ICM_20948_Stat_FIFOMoreDataAvail) // If more data is available then we should read it right away - and not delay
-  {
-    delay(10);
-  }
-  return 0;
+  return event.orientation.x;
 }
 
+
+
 void setup() {
+  // Initialize RoboClaws with baud rate
+  roboclaw.begin(38400);
+  // Immediately set roboclaw to 0 in case of reset
+  killMotors();
   Serial.begin(9600);
   delay(1000); // Add a delay to prevent issues initializing BLE after flashing
   BLEDevice::init("ESP32_BLE"); // Set BLE device name
   BLEServer *pServer = BLEDevice::createServer(); // Create BLE server
   pServer->setCallbacks(new MyServerCallbacks());
+
+  // Write to Serial task for debugging
+  xTaskCreate(
+    TaskWriteToSerial,
+    "Task Write To Serial", // name for convenience
+    2048,                   // stack size
+    NULL,                   // no params
+    4,                      // prio of 2
+    NULL                    // task handle is not used here
+  );
+
+  // Move Robot task
+  xTaskCreate(
+    TaskMoveRobot,              // Pointer to Task Entry Function (Function Name)
+    "Task Issue Move Commands", // Name for convenience
+    2048,                       // Stack size
+    NULL,                       // Parameters given to Task, NULL
+    3,                          // Priority of Task, higher is more priority
+    NULL                        // Task's handle, can be set to NULL
+    );
 
   // Create the BLE Service
   BLEService *pService = pServer->createService(SERVICE_UUID);
@@ -208,111 +300,109 @@ void setup() {
   pServer->getAdvertising()->start(); // Start advertising
   Serial.println("Waiting for a client connection...");
 
-  // Initialize RoboClaws with baud rate
-  roboclaw.begin(38400);// Should we go to 460800 bps
-
-  // Initialize IMU
-  WIRE_PORT.begin();
-  WIRE_PORT.setClock(400000);
-  
-  bool initialized = false;
-  while (!initialized) {
-    // Try calling begin()
-    myICM.begin(WIRE_PORT, AD0_VAL);
-
-    // Check status and reconnect if needed
-    if (myICM.status != ICM_20948_Stat_Ok) {
-      Serial.println("Trying to connect again...");
-      delay(500);
-    } else {
-      initialized = true;
-    }
+  // ------------ Initialize IMU -----------
+  /* Initialize the sensor */
+  if (!bno.begin())
+  {
+    /* There was a problem detecting the BNO055 ... check your connections */
+    Serial.print("Ooops, no BNO055 detected ... Check your wiring or I2C ADDR!");
+    while (1);
   }
-  
-  Serial.println(myICM.statusString());
-  
-  bool success = true; // Use success to show if the DMP configuration was successful
 
-  // Initialize the DMP. initializeDMP is a weak function. You can overwrite it if you want to e.g. to change the sample rate
-  success &= (myICM.initializeDMP() == ICM_20948_Stat_Ok);
+  /* Use external crystal for better accuracy */
+  bno.setExtCrystalUse(true);
 
-  // Enable the DMP Game Rotation Vector sensor
-  success &= (myICM.enableDMPSensor(INV_ICM20948_SENSOR_GAME_ROTATION_VECTOR) == ICM_20948_Stat_Ok);
-
-  success &= (myICM.setDMPODRrate(DMP_ODR_Reg_Quat6, 0) == ICM_20948_Stat_Ok); // Set to the maximum
-
-  // Enable the FIFO
-  success &= (myICM.enableFIFO() == ICM_20948_Stat_Ok);
-
-  // Enable the DMP
-  success &= (myICM.enableDMP() == ICM_20948_Stat_Ok);
-
-  // Reset DMP
-  success &= (myICM.resetDMP() == ICM_20948_Stat_Ok);
-
-  // Reset FIFO
-  success &= (myICM.resetFIFO() == ICM_20948_Stat_Ok);
-
-  // Check success
-  if (success) {
-    Serial.println("DMP enabled!");
-  } else {
-    Serial.println("Enable DMP failed!");
-    Serial.println("Please check that you have uncommented line 29 (#define ICM_20948_USE_DMP) in ICM_20948_C.h...");
-    while (1)
-      ; // Do nothing more
-  }
-  
+  pinMode(LED_PIN, OUTPUT);
 }
 
 void loop() {
-  // Read IMU first
-  float angleFacing = readIMU();
-  // Adjust -180 to 180 ---> 0 to 360
-  if (angleFacing < 0) {
-    angleFacing += 360;
-  }
-  
-  // Mecanum drive based on the BLE readings
-  float power = joystickMagnitude / maxMagnitude;// Normalize power 0-1
-  float anglesToRadians = 0.01745329252;
-  float controllerAngle = ((joystickAngle * anglesToRadians) - (PI / 4));
-  // 360 values of precision
-  int finalAngle = (int) round((controllerAngle - angleFacing)) % 360;
-  float sine = sin(finalAngle);
-  float cosine = cos(finalAngle);
-  float maximum = max(abs(sine), abs(cosine));// 0 to 1
+}
 
-  // sine yields -1.0 to 1.0, swipe magnitude is 0-50, then -50.0 to 50.0 is normalized to -1.0 to 1.0
-  float turn = sin((swipeAngle * anglesToRadians)) * swipeMagnitude / maxMagnitude;
-  int turnNormalized = turn * maxMotorPower * TURN_RATIO;// -maxMotorPower to maxMotorPower
+void TaskWriteToSerial(void *pvParameters) { // This is a task.
+  input_t command;
+  for (;;) { // A Task shall never return or exit.
+    // One approach would be to poll the function (uxQueueMessagesWaiting(QueueHandle) and call delay if nothing is waiting.
+    // The other approach is to use infinite time to wait defined by constant `portMAX_DELAY`:
+    if (QueueHandle != NULL) { // Sanity check just to make sure the queue actually exists
+      int ret = xQueuePeek(QueueHandle, &command, portMAX_DELAY);
+      if (ret == pdPASS) {
+        // if the angle and mag are not both 0
+        if(command.joystickMagnitude != 0 || command.swipeMagnitude != 0) {
+          if (command.type == JOYSTICK) {
+              Serial.printf("Joystick - Angle: %f, Mag: %f, Swipe - angle: %f, Mag: %f\n", command.joystickAngle, command.joystickMagnitude, command.swipeAngle, command.swipeMagnitude);
+            }
+         }
+      } else if (ret == pdFALSE) {
+        Serial.println("The `TaskWriteToSerial` was unable to receive data from the Queue");
+      }
+    } // Sanity check
+  } // Infinite loop
+}
 
-  // Motor speeds 0 to max motor power
-  // Negative sign because motors are on the outside
-  int leftFront = power * maxMotorPower * sine / maximum + turnNormalized;// turn is 0-maxMotorPower added onto translation power 0-maxMotorPower
-  int rightFront = -(power * maxMotorPower * cosine / maximum - turnNormalized);
-  int leftRear = power * maxMotorPower * cosine / maximum + turnNormalized;
-  int rightRear = -(power * maxMotorPower * sine / maximum - turnNormalized);
-
-  // If one is overpowered, make sure it maxes out and the rest are scaled down with it
-  if (power * maxMotorPower + abs(turnNormalized) > maxMotorPower) {
-    // -maxMotorPower to maxMotorPower
-    leftFront = (leftFront / (power * maxMotorPower + abs(turnNormalized))) * maxMotorPower;
-    rightFront = (rightFront / (power * maxMotorPower + abs(turnNormalized))) * maxMotorPower;
-    leftRear = (leftRear / (power * maxMotorPower + abs(turnNormalized))) * maxMotorPower;
-    rightRear = (rightRear / (power * maxMotorPower + abs(turnNormalized))) * maxMotorPower;
-  }
-
-  // -127 to 127 --convert--> 0 to 127
-  leftRear = (leftRear + 127) / 2;
-  leftFront = (leftFront + 127) / 2;
-  rightRear = (rightRear + 127) / 2;
-  rightFront = (rightFront + 127) / 2;
-
-  // Control motors
-  roboclaw.ForwardBackwardM2(address_left, leftRear);
-  roboclaw.ForwardBackwardM1(address_right, leftFront);
-  roboclaw.ForwardBackwardM1(address_left, rightRear);
-  roboclaw.ForwardBackwardM2(address_right, rightFront);
-
+void TaskMoveRobot(void *pvParameters)
+{
+  input_t command;
+  for (;;) 
+  {  // A task shall never return or exit
+      if (QueueHandle != NULL)
+      {  // Sanity check to make sure queue actually exists
+        int ret = xQueueReceive(QueueHandle, &command, portMAX_DELAY);  // occupy the command buffer with the queue data
+        if (ret == pdPASS) // if ret == pdPASS, read from queue was succesful
+        {
+          // Read IMU first get angle 0-360
+          float angleFacing = readIMU();
+        
+          if (!fieldOriented) {
+            angleFacing = 0;
+          }
+        
+          // Mecanum drive based on the BLE readings
+          float power = command.joystickMagnitude / maxMagnitude * POWER_ADJ;// Normalize power 0-1
+          float anglesToRadians = 0.01745329252;
+          // 360 values of precision
+          int trueAngle = (int) round((command.joystickAngle - angleFacing)) % 360;
+          float finalAngle = ((trueAngle * anglesToRadians) - (PI / 4));
+        
+          float sine = sin(finalAngle);
+          float cosine = cos(finalAngle);
+          float maximum = max(abs(sine), abs(cosine));// 0 to 1
+        
+          // sine yields -1.0 to 1.0, swipe magnitude is 0-50, then -50.0 to 50.0 is normalized to -1.0 to 1.0
+          float turn = sin((command.swipeAngle * anglesToRadians)) * command.swipeMagnitude / maxMagnitude;
+          int turnNormalized = turn * maxMotorPower * TURN_RATIO;// -maxMotorPower to maxMotorPower, scaled by defined amount
+        
+          // Motor speeds 0 to max motor power
+          // Negative sign because motors are on the outside
+          int leftFront = power * maxMotorPower * sine / maximum + turnNormalized;// turn is 0-maxMotorPower added onto translation power 0-maxMotorPower
+          int rightFront = -(power * maxMotorPower * cosine / maximum - turnNormalized);
+          int leftRear = power * maxMotorPower * cosine / maximum + turnNormalized;
+          int rightRear = -(power * maxMotorPower * sine / maximum - turnNormalized);
+        
+          // If one is overpowered, make sure it maxes out and the rest are scaled down with it
+          if (power * maxMotorPower + abs(turnNormalized) > maxMotorPower) {
+            // -maxMotorPower to maxMotorPower
+            leftFront = (leftFront / (power * maxMotorPower + abs(turnNormalized))) * maxMotorPower;
+            rightFront = (rightFront / (power * maxMotorPower + abs(turnNormalized))) * maxMotorPower;
+            leftRear = (leftRear / (power * maxMotorPower + abs(turnNormalized))) * maxMotorPower;
+            rightRear = (rightRear / (power * maxMotorPower + abs(turnNormalized))) * maxMotorPower;
+          }
+        
+          // -127 to 127 --convert--> 0 to 127
+          leftRear = (leftRear + 127) / 2;
+          leftFront = (leftFront + 127) / 2;
+          rightRear = (rightRear + 127) / 2;
+          rightFront = (rightFront + 127) / 2;
+        
+          // Control motors
+          roboclaw.ForwardBackwardM2(address_left, leftRear);
+          roboclaw.ForwardBackwardM1(address_right, leftFront);
+          roboclaw.ForwardBackwardM1(address_left, rightRear);
+          roboclaw.ForwardBackwardM2(address_right, rightFront);
+        }
+        else if (ret == pdFALSE)
+        {
+          Serial.println("The 'TaskMoveRobot' was unsable to receive data from the Queue");
+        }
+      } // Sanity Check
+  } // Task Loop
 }
