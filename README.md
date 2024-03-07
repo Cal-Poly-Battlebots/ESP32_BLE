@@ -13,7 +13,7 @@ Download .ino file and place in directory
 ## ESP32
 Install board ESP32-Dev-Module from https://github.com/espressif/arduino-esp32
 
-Select ESP32-DEV-WROOM for board, and don't forget to select port
+Select ESP32 Dev Module for board, and don't forget to select port
 
 ESP32 Datasheet found here: https://www.espressif.com/sites/default/files/documentation/esp32-wroom-da_datasheet_en.pdf)
 
