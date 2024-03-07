@@ -17,7 +17,9 @@ ESP32 Datasheet found here: https://www.espressif.com/sites/default/files/docume
 
 ## IMU Libraries (need all 3)
 Adafruit BNO055: https://github.com/adafruit/Adafruit_BNO055
+
 Adafruit sensor: https://github.com/adafruit/Adafruit_Sensor
+
 Adafruit Bus IO: https://github.com/adafruit/Adafruit_BusIO
 
 ## Roboclaw libraries:
