@@ -145,7 +145,7 @@ class MyReadCallbacks : public BLECharacteristicCallbacks {
 
           // "100" means weapon enable
           weaponEnable = (value[0] == '1');
-          if (weaponEnable) {
+          if (weaponEnable && !estop) {
             Serial.println("Weapon on");
             digitalWrite(WEAPON_GPIO, HIGH);
           } else {
@@ -167,6 +167,7 @@ class MyReadCallbacks : public BLECharacteristicCallbacks {
             // ESTOP on
             Serial.println("killing");
             digitalWrite(KILL_PIN, HIGH);
+            digitalWrite(WEAPON_GPIO, LOW);
           } else {
             // ESTOP off
             digitalWrite(KILL_PIN, LOW);
