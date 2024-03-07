@@ -21,9 +21,11 @@
 #include <Adafruit_BNO055.h>
 #include <utility/imumaths.h>
 #include <esp_task_wdt.h>
+
 //3 seconds WDT
 #define WDT_TIMEOUT 3
 #define KILL_PIN 32
+#define WEAPON_GPIO 23
 
 #define LED_PIN 25
 
@@ -47,6 +49,8 @@ RoboClaw roboclaw(&Serial2, 10000);
 Adafruit_BNO055 bno = Adafruit_BNO055(IMU_ADDR);
 
 bool fieldOriented = true;
+bool weaponEnable = false;
+bool estop = true;
 
 //---------BLE---------------------
 BLECharacteristic *joystickCharacteristic;
@@ -75,12 +79,13 @@ int maxMotorPower = 127;
 void killMotors() {
   // Disconnect power from the motors
   digitalWrite(KILL_PIN, HIGH);
-  
-//  roboclaw.ForwardM2(address_left, 0);
-//  roboclaw.ForwardM1(address_right, 0);
-//  roboclaw.ForwardM1(address_left, 0);
-//  roboclaw.ForwardM2(address_right, 0);
-  
+  digitalWrite(WEAPON_GPIO, LOW);
+
+  //  roboclaw.ForwardM2(address_left, 0);
+  //  roboclaw.ForwardM1(address_right, 0);
+  //  roboclaw.ForwardM1(address_left, 0);
+  //  roboclaw.ForwardM2(address_right, 0);
+
   delay(1000);
 }
 
@@ -88,7 +93,7 @@ class MyServerCallbacks : public BLEServerCallbacks {
     void onConnect(BLEServer *pServer) {
       digitalWrite(LED_PIN, HIGH);
       Serial.println("Device connected.");
-      
+
       deviceConnected = true;
     };
     void onDisconnect(BLEServer *pServer) {
@@ -137,17 +142,28 @@ class MyReadCallbacks : public BLECharacteristicCallbacks {
         if (value.length() > 2) {
           Serial.print("String: ");
           Serial.println(String(value.c_str()));
-          
+
+          // "100" means weapon enable
+          weaponEnable = (value[0] == '1');
+          if (weaponEnable) {
+            Serial.println("Weapon on");
+            digitalWrite(WEAPON_GPIO, HIGH);
+          } else {
+            Serial.println("Weapon off");
+            digitalWrite(WEAPON_GPIO, LOW);
+          }
+
           // "010" means field oriented enable
           fieldOriented = (value[1] == '1');
-          if (value[1] == '1') {
+          if (fieldOriented) {
             Serial.println("FO on");
           } else {
             Serial.println("FO off");
           }
 
-          // Toggle Kill Pin ESTOP using "001"
-          if (value[2] == '0') {
+          // Toggle Kill Pin ESTOP using "000"
+          estop = (value[2] == '0');
+          if (estop) {
             // ESTOP on
             Serial.println("killing");
             digitalWrite(KILL_PIN, HIGH);
@@ -177,30 +193,30 @@ float readIMU() {
   */
 
   /* The processing sketch expects data as roll, pitch, heading */
-//  Serial.print(F("Orientation: "));
-//  Serial.print((float)event.orientation.x);
-//  Serial.print(F(" "));
-//  Serial.print((float)event.orientation.y);
-//  Serial.print(F(" "));
-//  Serial.print((float)event.orientation.z);
-//  Serial.println(F(""));
+  //  Serial.print(F("Orientation: "));
+  //  Serial.print((float)event.orientation.x);
+  //  Serial.print(F(" "));
+  //  Serial.print((float)event.orientation.y);
+  //  Serial.print(F(" "));
+  //  Serial.print((float)event.orientation.z);
+  //  Serial.println(F(""));
 
   /* Also send calibration data for each sensor. */
   uint8_t sys, gyro, accel, mag = 0;
   bno.getCalibration(&sys, &gyro, &accel, &mag);
-//  Serial.print(F("Calibration: "));
-//  Serial.print(sys, DEC);
-//  Serial.print(F(" "));
-//  Serial.print(gyro, DEC);
-//  Serial.print(F(" "));
-//  Serial.print(accel, DEC);
-//  Serial.print(F(" "));
-//  Serial.println(mag, DEC);
+  //  Serial.print(F("Calibration: "));
+  //  Serial.print(sys, DEC);
+  //  Serial.print(F(" "));
+  //  Serial.print(gyro, DEC);
+  //  Serial.print(F(" "));
+  //  Serial.print(accel, DEC);
+  //  Serial.print(F(" "));
+  //  Serial.println(mag, DEC);
 
   delay(BNO055_SAMPLERATE_DELAY_MS);
-//
-//  Serial.print("Facing Angle: ");
-//  Serial.println(event.orientation.x);
+  //
+  //  Serial.print("Facing Angle: ");
+  //  Serial.println(event.orientation.x);
 
   return event.orientation.x;
 }
@@ -213,10 +229,11 @@ void setup() {
   esp_task_wdt_init(WDT_TIMEOUT, true); //enable panic so ESP32 restarts
   esp_task_wdt_add(NULL); //add current thread to WDT watch
   pinMode(KILL_PIN, OUTPUT);
+  pinMode(WEAPON_GPIO, OUTPUT);
   killMotors();
-  
+
   esp_task_wdt_reset();
-  
+
   // Debug LED off
   pinMode(LED_PIN, OUTPUT);
   digitalWrite(LED_PIN, LOW);
@@ -224,16 +241,16 @@ void setup() {
   // Initialize RoboClaws with baud rate
   roboclaw.begin(38400);
   delay(400);
-  
+
   esp_task_wdt_reset();
-  
+
   // Immediately set roboclaw to 0 in case of reset
   killMotors();
-  
+
   delay(1000); // Add a delay to prevent issues initializing BLE after flashing
-  
+
   esp_task_wdt_reset();
-  
+
   BLEDevice::init("ESP32_BLE"); // Set BLE device name
   BLEServer *pServer = BLEDevice::createServer(); // Create BLE server
   pServer->setCallbacks(new MyServerCallbacks());
@@ -260,23 +277,23 @@ void setup() {
   abilityCharacteristic->addDescriptor(new BLE2902());
   abilityCharacteristic->setCallbacks(new MyReadCallbacks());
 
-  
+
   esp_task_wdt_reset();
-  
+
   pService->start(); // Start the service
   pServer->getAdvertising()->start(); // Start advertising
   Serial.println("Waiting for a client connection...");
 
-  
+
   esp_task_wdt_reset();
-  
+
   // ------------ Initialize IMU -----------
   /* Initialize the sensor */
   if (!bno.begin())
   {
     /* There was a problem detecting the BNO055 ... check your connections */
     Serial.print("Ooops, no BNO055 detected ... Check your wiring or I2C ADDR!");
-    
+
     esp_task_wdt_reset();
     while (1);
   }
@@ -286,17 +303,17 @@ void setup() {
 }
 
 void loop() {
-  
+
   if (!deviceConnected) {
     digitalWrite(LED_PIN, LOW);
     Serial.println("Waiting for a client connection...");
     killMotors();
-    
+
     // Check in with watchdog
     esp_task_wdt_reset();
     return;
   }
-  
+
   // Read IMU first get angle 0-360
   float angleFacing = readIMU();
 
