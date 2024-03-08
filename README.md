@@ -27,6 +27,8 @@ Adafruit Bus IO: https://github.com/adafruit/Adafruit_BusIO
 ## Roboclaw libraries:
 https://resources.basicmicro.com/using-the-roboclaw-arduino-library/
 
+Roboclaw 2x7A Datasheet: https://downloads.basicmicro.com/docs/roboclaw_datasheet_2x7A.pdf
+
 # Field Oriented Control
 This code reads an IMU and uses an Euler angle library to find the direction the bot is currently facing (yaw). The operator using joysticks simply gives the bot a direction
 and the bot will automatically correct using it's known orientation angle such that the bot drives in a direction that is from the operator's standpoint,
