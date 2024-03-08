@@ -24,7 +24,7 @@ Adafruit sensor: https://github.com/adafruit/Adafruit_Sensor
 
 Adafruit Bus IO: https://github.com/adafruit/Adafruit_BusIO
 
-## Roboclaw libraries:
+## Roboclaws
 https://resources.basicmicro.com/using-the-roboclaw-arduino-library/
 
 Roboclaw 2x7A Datasheet: https://downloads.basicmicro.com/docs/roboclaw_datasheet_2x7A.pdf
