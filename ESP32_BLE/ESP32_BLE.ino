@@ -81,10 +81,11 @@ void killMotors() {
   digitalWrite(KILL_PIN, HIGH);
   digitalWrite(WEAPON_GPIO, LOW);
 
-  //  roboclaw.ForwardM2(address_left, 0);
-  //  roboclaw.ForwardM1(address_right, 0);
-  //  roboclaw.ForwardM1(address_left, 0);
-  //  roboclaw.ForwardM2(address_right, 0);
+  // Turn off motors
+  // roboclaw.ForwardBackwardM2(address_left, 65);
+  // roboclaw.ForwardBackwardM1(address_right, 65);
+  // roboclaw.ForwardBackwardM1(address_left, 65);
+  // roboclaw.ForwardBackwardM2(address_right, 65);
 
   delay(1000);
 }
@@ -306,9 +307,9 @@ void setup() {
 void loop() {
 
   if (!deviceConnected) {
+    killMotors();
     digitalWrite(LED_PIN, LOW);
     Serial.println("Waiting for a client connection...");
-    killMotors();
 
     // Check in with watchdog
     esp_task_wdt_reset();
