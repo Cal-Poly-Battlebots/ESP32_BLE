@@ -4,6 +4,9 @@ This repository contains the mecanum control system implemented in Arduino C++.
 It uses Bluetooth Low Energy to receive data over Bluetooth characteristics. Uses default Arduino BLE library and an Euler angle library provided below.
 Controls Roboclaws and has IMU integration to guide field-oriented control.
 
+# ExpoCode
+Used for the expo on the final robot. DO NOT connect the roboclaw kill signal wires, this version of the code does not use these signals and instead tells the motors not to move rather than disconnecting the power from the motors. To change the drivetrain speed adjust "maxMotorPower" (0->127) NOTE that the maximum recommended power is 64 because beyond this point the wheels will just spin out when running at full speed. In addition, the higher speeds will result in greater wear on the gears. In this version the weapon motor does not properly work and it is recommended to adjust the code so that the weapon is controlled with a CAN signal rather than simple PWM. 
+
 # Prerequisites
 ## Arduino IDE
 Download Arduino IDE (we use the legacy IDE v1.8.19 found at https://www.arduino.cc/en/software)
